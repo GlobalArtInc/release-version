@@ -1,0 +1,16 @@
+[package]
+name = "release-version"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Set the project version in package.json / Cargo.toml from a release tag"
+repository = "https://github.com/GlobalArtInc/release-version"
+publish = false
+
+[dependencies]
+semver = "1.0.28"
+serde_json = "1.0.151"
+toml_edit = "0.25.15"
+
+[profile.release]
+strip = true

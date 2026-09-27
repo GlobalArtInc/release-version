@@ -1,0 +1,123 @@
+name: release-version
+description: Set the version in package.json / Cargo.toml from a release tag, optionally committing it
+author: GlobalArtInc
+branding:
+  icon: tag
+  color: blue
+
+inputs:
+  tag:
+    description: Release tag such as v1.2.3. Defaults to the published release's tag, then the pushed ref.
+    required: false
+    default: ${{ github.event.release.tag_name || github.ref_name }}
+  files:
+    description: Manifests to update, one per line (Cargo.toml or a JSON file with a top-level "version"). Empty means package.json, then Cargo.toml.
+    required: false
+    default: ''
+  working-directory:
+    description: Directory the files are relative to.
+    required: false
+    default: '.'
+  if-newer:
+    description: Never move a version backwards.
+    required: false
+    default: 'false'
+  strict:
+    description: Allow only plain X.Y.Z with parts up to 65535, as browser extension stores require.
+    required: false
+    default: 'false'
+  commit:
+    description: 'Commit the rewritten files and push them to the checked-out branch. Needs `contents: write`.'
+    required: false
+    default: 'false'
+  commit-message:
+    description: Commit message; {version} is replaced with the new version.
+    required: false
+    default: 'Bump version to {version}'
+
+outputs:
+  version:
+    description: The version taken from the tag, e.g. 1.2.3.
+    value: ${{ steps.run.outputs.version }}
+  previous:
+    description: The version the first file held before.
+    value: ${{ steps.run.outputs.previous }}
+  changed:
+    description: Whether any file was rewritten.
+    value: ${{ steps.run.outputs.changed }}
+  prerelease:
+    description: Whether the tag carries a pre-release suffix such as -rc.1.
+    value: ${{ steps.run.outputs.prerelease }}
+  files:
+    description: Every file that was rewritten (manifests and Cargo.lock), one per line.
+    value: ${{ steps.run.outputs.files }}
+
+runs:
+  using: composite
+  steps:
+    # Built from the action's own source at the pinned ref, so the tool always
+    # matches the action version. Hosted runners ship with a Rust toolchain.
+    - name: Build release-version
+      shell: bash
+      env:
+        SOURCE: ${{ github.action_path }}
+        ROOT: ${{ runner.temp }}/release-version
+        CARGO_TARGET_DIR: ${{ runner.temp }}/release-version-target
+      run: |
+        command -v cargo >/dev/null || {
+          echo "::error::cargo is not installed; add a Rust toolchain step (e.g. dtolnay/rust-toolchain) before this action"
+          exit 1
+        }
+        cargo install --locked --quiet --path "$SOURCE" --root "$ROOT"
+
+    - name: Set version
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        BIN: ${{ runner.temp }}/release-version/bin/release-version
+        TAG: ${{ inputs.tag }}
+        FILES: ${{ inputs.files }}
+        IF_NEWER: ${{ inputs.if-newer }}
+        STRICT: ${{ inputs.strict }}
+      run: |
+        args=("$TAG")
+        while IFS= read -r file; do
+          file="$(echo "$file" | xargs)"
+          if [[ -n "$file" ]]; then args+=(--file "$file"); fi
+        done <<< "$FILES"
+        if [[ "$IF_NEWER" == true ]]; then args+=(--if-newer); fi
+        if [[ "$STRICT" == true ]]; then args+=(--strict); fi
+        "$BIN" "${args[@]}"
+
+    - name: Commit and push
+      if: inputs.commit == 'true' && steps.run.outputs.changed == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        VERSION: ${{ steps.run.outputs.version }}
+        FILES: ${{ steps.run.outputs.files }}
+        MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        branch="$(git symbolic-ref --quiet --short HEAD)" || {
+          echo "::error::commit needs a branch checkout, not a detached HEAD"
+          exit 1
+        }
+        files=()
+        while IFS= read -r file; do
+          if [[ -n "$file" ]]; then files+=("$file"); fi
+        done <<< "$FILES"
+        git config user.name 'github-actions[bot]'
+        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        # Only the files the tool rewrote, never unrelated changes from earlier steps.
+        git add -- "${files[@]}"
+        git commit --quiet --message "${MESSAGE//\{version\}/$VERSION}"
+        for attempt in 1 2 3; do
+          if git push --quiet origin "HEAD:$branch"; then
+            echo "pushed $(git rev-parse --short HEAD) to $branch"
+            exit 0
+          fi
+          echo "push to $branch rejected, rebasing (attempt $attempt)" >&2
+          git pull --quiet --rebase --autostash origin "$branch"
+        done
+        exit 1

@@ -1,0 +1,78 @@
+name: bump-version
+
+# Reusable workflow: moves the version on a branch (the default branch unless
+# told otherwise) up to the version of a release tag and pushes the commit.
+#
+#   jobs:
+#     bump:
+#       uses: GlobalArtInc/release-version/.github/workflows/bump-version.yml@v1
+#       permissions:
+#         contents: write
+#       with:
+#         tag: ${{ github.event.release.tag_name }}
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag such as v1.2.3.
+        type: string
+        required: true
+      files:
+        description: Manifests to update, one per line. Empty means package.json, then Cargo.toml.
+        type: string
+        default: ''
+      working-directory:
+        description: Directory the files are relative to.
+        type: string
+        default: '.'
+      strict:
+        description: Allow only plain X.Y.Z with parts up to 65535 (browser extension stores).
+        type: boolean
+        default: false
+      branch:
+        description: Branch to bump. Defaults to the repository default branch.
+        type: string
+        default: ''
+      commit-message:
+        description: Commit message; {version} is replaced with the new version.
+        type: string
+        default: 'Bump version to {version}'
+    secrets:
+      token:
+        description: Token allowed to push to a protected branch. Defaults to GITHUB_TOKEN.
+        required: false
+    outputs:
+      version:
+        description: The version taken from the tag.
+        value: ${{ jobs.bump.outputs.version }}
+      changed:
+        description: Whether a commit was pushed.
+        value: ${{ jobs.bump.outputs.changed }}
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.version.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch || github.event.repository.default_branch }}
+          token: ${{ secrets.token || github.token }}
+
+      - id: version
+        # The major tag moves with every release of this repository, so it
+        # stays in step with the ref callers pin this workflow to.
+        uses: GlobalArtInc/release-version@v1
+        with:
+          tag: ${{ inputs.tag }}
+          files: ${{ inputs.files }}
+          working-directory: ${{ inputs.working-directory }}
+          strict: ${{ inputs.strict }}
+          if-newer: 'true'
+          commit: 'true'
+          commit-message: ${{ inputs.commit-message }}

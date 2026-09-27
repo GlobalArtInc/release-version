@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup component add rustfmt clippy
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+      - run: cargo test --locked
+
+  # Runs the composite action from this checkout against throwaway repositories,
+  # including the commit and push path (into a local bare remote).
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare fixtures
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/fixture"
+          git init --quiet --bare "$root/remote.git"
+          git init --quiet --initial-branch main "$root/work"
+          cd "$root/work"
+          printf '{\n  "name": "fixture",\n  "version": "1.0.0",\n  "private": true\n}\n' > package.json
+          printf 'untouched\n' > notes.txt
+          git add .
+          git -c user.name=ci -c user.email=ci@example.com commit --quiet -m init
+          git remote add origin "$root/remote.git"
+          git push --quiet origin main
+          printf 'local change that must not be committed\n' >> notes.txt
+
+      - id: older
+        name: An older tag leaves the version alone
+        uses: ./
+        with:
+          tag: v0.9.0
+          if-newer: 'true'
+          working-directory: ${{ runner.temp }}/fixture/work
+
+      - id: bump
+        name: A newer tag bumps, commits and pushes
+        uses: ./
+        with:
+          tag: refs/tags/v1.2.3
+          strict: 'true'
+          if-newer: 'true'
+          commit: 'true'
+          working-directory: ${{ runner.temp }}/fixture/work
+
+      - name: Check results
+        env:
+          OLDER_CHANGED: ${{ steps.older.outputs.changed }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          PREVIOUS: ${{ steps.bump.outputs.previous }}
+          CHANGED: ${{ steps.bump.outputs.changed }}
+          FILES: ${{ steps.bump.outputs.files }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/fixture"
+          test "$OLDER_CHANGED" = false
+          test "$VERSION" = 1.2.3
+          test "$PREVIOUS" = 1.0.0
+          test "$CHANGED" = true
+          test "$FILES" = package.json
+          test "$(git -C "$root/remote.git" log -1 --format=%s main)" = 'Bump version to 1.2.3'
+          test "$(git -C "$root/remote.git" show main:package.json | grep '"version"')" = '  "version": "1.2.3",'
+          test "$(git -C "$root/remote.git" diff --name-only main~1 main)" = package.json
+          git -C "$root/work" diff --quiet -- notes.txt && { echo 'notes.txt lost its local change' >&2; exit 1; } || true

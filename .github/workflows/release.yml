@@ -1,0 +1,47 @@
+name: release
+
+# Releasing this repository: publish a GitHub release tagged vX.Y.Z. Then
+#   - the major tag (v1, v2, …) is moved to the release, which is what callers pin;
+#   - Cargo.toml / Cargo.lock on the default branch are bumped with this very action.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  major-tag:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Move the major tag
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not vX.Y.Z" >&2; exit 1; }
+          major="${TAG%%.*}"
+          git tag --force "$major"
+          git push --force origin "refs/tags/$major"
+          echo "$major -> $(git rev-parse --short HEAD)"
+
+  bump:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: ./
+        with:
+          tag: ${{ github.event.release.tag_name }}
+          if-newer: 'true'
+          commit: 'true'
