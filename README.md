@@ -53,7 +53,7 @@ Outputs: `version`, `changed`.
 Use it before building so artifacts carry the tag's version even though the tagged commit does not:
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
   with:
     ref: ${{ github.event.release.tag_name }}
 
